@@ -80,9 +80,18 @@ class PlayViewModel(
 
     /** 自身状态与引擎播放状态合并成一个 UI 状态流。 */
     val state: StateFlow<UiState> = combine(_own, engine.state) { own, now ->
+        val target = own.song ?: now.song
+        val declared = target?.durationMs ?: 0L
+        val actual = now.durationMs
+        // 有些源即便账号有权限也会带 freeTrialInfo（尤其网易云的对唱/合唱版本），
+        // 只看接口标记会把整首正片标成试听。真正播放后拿到的时长才是硬证据：
+        // 实际时长接近曲目声明时长就说明拿到的是整首，此时不该再提示试听。
+        val stillPreview = own.preview &&
+            !(actual > 0L && declared > 0L && actual >= declared * 0.8)
         own.copy(
             song = own.song ?: now.song,
             actualPlatform = own.actualPlatform.ifBlank { now.actualPlatform },
+            preview = stillPreview,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(2_000), UiState())
 
@@ -109,9 +118,18 @@ class PlayViewModel(
             }
             _own.update { it.copy(song = song, actualPlatform = song.platform.name, resolving = false, error = null, lyric = emptyList(), preview = false) }
             val endpoint = com.polytune.source.api.PlayEndpoint(filePath, com.polytune.source.api.Protocol.LOCAL, quality = Quality.HIGH)
+            val file = java.io.File(filePath)
+            // 先读下载时存下的旁边车歌词；有就不再打网络，断网也能看歌词。
+            val cached = com.polytune.core.util.LyricStore.load(file)
+            if (cached.isNotEmpty()) _own.update { it.copy(lyric = cached) }
             engine.prepare(song, endpoint, song.platform.name)
-            val lyric = agg.lyricWithFallback(song)
-            _own.update { it.copy(lyric = lyric.first) }
+            if (cached.isEmpty()) {
+                val lyric = agg.lyricWithFallback(song)
+                if (lyric.first.isNotEmpty()) {
+                    _own.update { it.copy(lyric = lyric.first) }
+                    runCatching { com.polytune.core.util.LyricStore.save(file, lyric.first) }
+                }
+            }
         }
     }
 

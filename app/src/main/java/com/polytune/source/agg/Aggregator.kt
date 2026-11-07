@@ -10,10 +10,12 @@ import com.polytune.source.api.Quality
 import com.polytune.source.api.ResolvedPlay
 import com.polytune.source.api.Song
 import com.polytune.source.api.bestAtMost
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -119,9 +121,7 @@ class Aggregator(val sources: Map<Platform, MusicSource>) {
         want: Quality,
         knownSiblings: List<Song>,
         allowCrossSource: Boolean = true,
-    ): ResolvedPlay {
-        val tried = mutableListOf<String>()
-        var previewFallback: ResolvedPlay? = null
+    ): ResolvedPlay = coroutineScope {
         val order = buildList {
             add(song.platform)
             if (allowCrossSource) {
@@ -129,43 +129,70 @@ class Aggregator(val sources: Map<Platform, MusicSource>) {
                 sources.keys.filter { it != song.platform && it !in this }.forEach { add(it) }
             }
         }
-        for (p in order) {
-            val src = sources[p] ?: continue
-            val variant = when {
-                p == song.platform -> song
-                else -> knownSiblings.firstOrNull { it.platform == p } ?: findVariant(song, p)
-            } ?: continue
-            // 逐级降档：目标档拿不到（VIP 锁、下架、该档 hash 缺失）时继续往下试，
-            // 而不是直接判定这首「没直链」。这是免费账号最常走的一条路径。
-            val ladder = qualityLadder(variant, want)
-            for (q in ladder) {
-                tried += "${p.displayName}:${q.label}"
-                // 异常不能静默吞掉：某次调用抛错时 next 档也会失败，只要把它写进 trace，
-                // 排查时就能立刻区分「接口返回空」和「代码炸了」。
-                val ep = try {
-                    src.playUrl(variant, q)
-                } catch (t: Throwable) {
-                    com.polytune.core.download.TraceCtx.app?.let { c ->
-                        com.polytune.core.download.DownloadTrace.log(
-                            c,
-                            "resolve throw ${p.name}/${variant.id} ${q.name}: " +
-                                "${t.javaClass.simpleName}: ${t.message}",
-                        )
-                    }
-                    null
-                }
-                if (ep == null || ep.url.isBlank()) continue
-                // 第一轮只要正片：未登录时 QQ 会下发试听片段，
-                // 谁先把试听塞进来谁就把整首正片挡住了，所以先存下来最后再考虑。
-                if (ep.preview) {
-                    if (previewFallback == null) previewFallback = ResolvedPlay(variant, p, ep, tried.toList())
-                    continue
-                }
-                return ResolvedPlay(variant, p, ep, tried)
+        // 各源并行抢答：串行试的时候，酷狗一首歌要先等它把三档音质全试完、再等 QQ 两档，
+        // 网易云才轮到，点一下歌要空等 4~6 秒。并行之后总耗时约等于最快那个源。
+        val pending = order.filter { sources[it] != null }
+            .map { p -> Job(p, async { resolveOn(p, song, want, knownSiblings) }) }
+            .toMutableList()
+        var previewFallback: ResolvedPlay? = null
+        val tried = mutableListOf<String>()
+        var winner: ResolvedPlay? = null
+        while (pending.isNotEmpty()) {
+            val done = select<Job> { pending.forEach { job -> job.deferred.onAwait { job } } }
+            pending.remove(done)
+            val attempt = done.deferred.await()
+            tried += attempt.tried
+            val r = attempt.resolved ?: continue
+            // 第一轮只要正片：未登录时 QQ 会下发试听片段，谁先把试听塞进来谁就把整首正片挡住了。
+            if (r.endpoint?.preview == true) {
+                if (previewFallback == null) previewFallback = r
+                continue
             }
+            winner = r
+            break
         }
-        previewFallback?.let { return it.copy(tried = tried) }
-        return ResolvedPlay(song, song.platform, null, tried)
+        // 找到正片就取消还在跑的源，否则 structured concurrency 会等它们全部超时才返回。
+        pending.forEach { runCatching { it.deferred.cancel() } }
+        winner?.copy(tried = tried.toList())
+            ?: previewFallback?.copy(tried = tried.toList())
+            ?: ResolvedPlay(song, song.platform, null, tried)
+    }
+
+    private data class Job(val platform: Platform, val deferred: Deferred<Attempt>)
+
+    private data class Attempt(val resolved: ResolvedPlay?, val tried: List<String>)
+
+    /** 在单个源上按音质阶梯取直链；异常也记进 trace，区分「接口返回空」与「代码炸了」。 */
+    private suspend fun resolveOn(
+        platform: Platform,
+        song: Song,
+        want: Quality,
+        knownSiblings: List<Song>,
+    ): Attempt {
+        val src = sources[platform] ?: return Attempt(null, emptyList())
+        val variant = when {
+            platform == song.platform -> song
+            else -> knownSiblings.firstOrNull { it.platform == platform } ?: findVariant(song, platform)
+        } ?: return Attempt(null, emptyList())
+        val tried = mutableListOf<String>()
+        for (q in qualityLadder(variant, want)) {
+            tried += "${platform.displayName}:${q.label}"
+            val ep = try {
+                src.playUrl(variant, q)
+            } catch (t: Throwable) {
+                com.polytune.core.download.TraceCtx.app?.let { c ->
+                    com.polytune.core.download.DownloadTrace.log(
+                        c,
+                        "resolve throw ${platform.name}/${variant.id} ${q.name}: " +
+                            "${t.javaClass.simpleName}: ${t.message}",
+                    )
+                }
+                null
+            }
+            if (ep == null || ep.url.isBlank()) continue
+            return Attempt(ResolvedPlay(variant, platform, ep, tried.toList()), tried.toList())
+        }
+        return Attempt(null, tried.toList())
     }
 
     /** 换源时搜一次对方曲库，指纹匹配即认为同一首。 */
@@ -271,6 +298,14 @@ class Aggregator(val sources: Map<Platform, MusicSource>) {
             runCatching { src.recommendBanners() }.getOrDefault(emptyList())
         } }
         defs.awaitAllList().flatten().distinctBy { it.imageUrl }
+    }
+
+    /** 已登录账号的「我的歌单」。未登录的源直接跳过，避免白等超时。 */
+    suspend fun myPlaylists(): List<PlaylistBrief> = coroutineScope {
+        val defs = sources.values.filter { it.isLoggedIn() }.map { src ->
+            async { runCatching { src.myPlaylists() }.getOrDefault(emptyList()) }
+        }
+        defs.awaitAllList().flatten().distinctBy { it.platform to it.id }
     }
 
     suspend fun playlists(): List<PlaylistBrief> = coroutineScope {

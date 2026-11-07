@@ -10,6 +10,7 @@ import com.polytune.source.agg.Aggregator
 import com.polytune.source.api.PlaylistBrief
 import com.polytune.source.api.Song
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -81,7 +82,12 @@ class LibraryViewModel(
         if (onlineJob?.isActive == true) return
         _ui.update { it.copy(onlineLoading = true, onlineError = null) }
         onlineJob = viewModelScope.launch {
-            val list = runCatching { agg.playlists() }.getOrElse { emptyList() }
+            // 账号歌单与平台推荐并行取：登录后先看到自己的歌单，未登录时 myPlaylists 立即返回空。
+            val mineDeferred = async { runCatching { agg.myPlaylists() }.getOrElse { emptyList() } }
+            val recDeferred = async { runCatching { agg.playlists() }.getOrElse { emptyList() } }
+            val mine = mineDeferred.await()
+            val rec = recDeferred.await()
+            val list = (mine + rec).distinctBy { it.platform to it.id }
             _ui.update {
                 it.copy(
                     online = list,

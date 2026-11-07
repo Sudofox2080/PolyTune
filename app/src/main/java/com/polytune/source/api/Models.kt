@@ -137,6 +137,8 @@ data class PlaylistBrief(
     val trackCount: Int = 0,
     val playCount: Long = 0,
     val platform: Platform,
+    /** true 表示这是当前登录账号自己创建/收藏的歌单，界面上单独归到「我的歌单」。 */
+    val owned: Boolean = false,
 )
 
 sealed interface LoginMethod {

@@ -1,8 +1,14 @@
 package com.polytune.ui.play
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -12,6 +18,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,6 +49,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -61,13 +69,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -129,78 +132,21 @@ fun NowPlayingScreen(
     var dragging by remember { mutableStateOf(false) }
     var dragValue by remember { mutableStateOf(0f) }
 
+    // 信息页 / 歌词页。两页横向互推：在信息页左滑进歌词，在歌词页右滑回信息。
+    // 用独立状态而不是滚动容器，是为了让歌词页的纵向手势完整归 LazyColumn，
+    // 彻底避开「上滑歌词把播放页收起」的抢手势问题。
+    var showLyrics by remember { mutableStateOf(false) }
+
     // 整页底色：从品牌色的深色版本起手（不用纯色 0.55 alpha 叠在 surface 上，
     // 那样亮度随下层的 surface 变化，浅色主题下封面会发灰）。
     val bgTop = MaterialTheme.colorScheme.surface
     val bgMid = brand.darken(0.78f).copy(alpha = 0.38f).compositeOver(bgTop)
     val bgBottom = MaterialTheme.colorScheme.surface
 
-    // 顶部「向上拖收起」的累计位移。只用来看要不要触发 onClose，
-    // 不做位移跟手（跟手需要把整页往下平移，而播放页本身已经在 AnimatedVisibility 里带着
-    // slideOutVertically 退场，两套位移叠加会互相打架）。
-    var dragAccum by remember { mutableStateOf(0f) }
-
-    // 松手瞬间的纵向速度（px/s，向上为负）。和 dragAccum 一样只用于判定，
-    // 单独存一份是因为速度必须逐帧算（相邻两个事件的 dy/dt），不能只留最后一段。
-    var velocityY by remember { mutableStateOf(0f) }
-    var lastDragUptime by remember { mutableStateOf(0L) }
-
     Box(
         modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(bgTop, bgMid, bgMid, bgBottom)))
-            // 收起手势挂在整页上，用 nested scroll 把「是否该滚动」的判断让给内容。
-            //
-            // 为什么不再只挂在封面上：真机上从封面往下一点起手（标题、艺人那两行）就收不起来，
-            // 因为手势区随 headerWeight 算出来的高度比视觉上的封面区还窄，手指很容易落在外面。
-            // 挂整页就必须先解决和 LazyColumn 抢手势的问题，所以这里不用
-            // detectVerticalDragGestures，而是自己吃 nested scroll 的 preScroll：
-            // 纵向列表只要有可滚的余地（歌词区就是），它会在 preScroll 里消费掉位移，
-            // 我们拿到的 available.y 接近 0，就不算收起位移；只有列表到顶、列表本身不滚，
-            // 位移才会漏到这里来，正好对应「页面整体往上推」的语义。
-            .nestedScroll(closeOnSwipeUpScroll(onClose = onClose))
-            .pointerInput(onClose, onPrevious, onNext, hasPrevious, hasNext) {
-                val closeThresholdPx = 120.dp.toPx()
-                val switchThresholdPx = 64.dp.toPx()
-                var horizontalDistance = 0f
-                var switched = false
-                detectHorizontalDragGestures(
-                    onDragStart = { horizontalDistance = 0f; switched = false },
-                    onDragEnd = { horizontalDistance = 0f; switched = false },
-                    onDragCancel = { horizontalDistance = 0f; switched = false },
-                ) { change, amount ->
-                    if (!switched) horizontalDistance += amount
-                    // 父级只接管明确的横滑；纵向仍交给歌词列表与上滑收起链路。
-                    if (abs(horizontalDistance) > 12f) change.consume()
-                    if (!switched && abs(horizontalDistance) >= switchThresholdPx) {
-                        if (horizontalDistance < 0f && hasNext) onNext()
-                        if (horizontalDistance > 0f && hasPrevious) onPrevious()
-                        switched = true
-                    }
-                }
-            }
-            .pointerInput(onClose) {
-                val closeThresholdPx = 120.dp.toPx()
-                detectVerticalDragGestures(
-                    onDragStart = { dragAccum = 0f; velocityY = 0f; lastDragUptime = 0L },
-                    onDragEnd = {
-                        if (dragAccum > closeThresholdPx || -velocityY > 1200f) onClose()
-                        dragAccum = 0f
-                        velocityY = 0f
-                        lastDragUptime = 0L
-                    },
-                    onDragCancel = { dragAccum = 0f; velocityY = 0f; lastDragUptime = 0L },
-                ) { change, dy ->
-                    if (dy < 0f) dragAccum -= dy
-                    val t = change.uptimeMillis
-                    if (lastDragUptime > 0L && t > lastDragUptime) {
-                        val dt = (t - lastDragUptime).toFloat()
-                        velocityY = dy / dt * 1000f
-                    }
-                    lastDragUptime = t
-                    change.consume()
-                }
-            },
+            .background(Brush.verticalGradient(listOf(bgTop, bgMid, bgMid, bgBottom))),
     ) {
         Canvas(Modifier.fillMaxSize()) {
             // 背景波纹：用两条正弦叠出流动感，随播放进度平移。
@@ -239,73 +185,47 @@ fun NowPlayingScreen(
                 queueSize = queueSize,
             )
 
-            // 上半部分按参考图改成「封面在左、歌名与歌手在右」：
-            // 竖屏下单列居中会把封面撑到半屏，歌词只剩窄窄一条；横过来之后封面还会把歌名挤出屏幕。
-            // 改成左右分栏后，封面高度受限、文字独立成列，歌词区能拿到更大的可用高度。
-            val availableH = LocalConfiguration.current.screenHeightDp.dp
-            val headerWeight = if (availableH < 700.dp) 1.0f else 0.9f
-            BoxWithConstraints(
-                Modifier
-                    .fillMaxWidth()
-                    .weight(headerWeight),
-                contentAlignment = Alignment.CenterStart,
-            ) {
-                // 封面同时受宽度与高度约束：横屏（如平板 / 模拟器）里高度只有两百多 dp，
-                // 只按宽度算会让封面把标题、艺人挤出可视区，出现“只有封面没有歌名”。
-                val widthBudget = maxWidth * 0.52f
-                val heightBudget = (maxHeight - 16.dp).coerceAtLeast(96.dp)
-                val coverSize = minOf(widthBudget, heightBudget, 220.dp)
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp),
-                ) {
-                    SongCover(song = song, brand = brand, size = coverSize)
-                    Spacer(Modifier.width(16.dp))
-                    Column(
-                        verticalArrangement = Arrangement.Center,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Text(
-                            song?.title ?: "未在播放",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            song?.artistsText.orEmpty(),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        if (!song?.album.isNullOrBlank()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                song?.album.orEmpty(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+            // 信息页与歌词页横向互推。AnimatedContent 只换中间这块，
+            // 顶栏、进度条、控制条保持不动，滑动时不会整页重建导致跳帧。
+            AnimatedContent(
+                targetState = showLyrics,
+                transitionSpec = {
+                    if (targetState) {
+                        (slideInHorizontally { it } + fadeIn()) togetherWith
+                            (slideOutHorizontally { -it / 3 } + fadeOut())
+                    } else {
+                        (slideInHorizontally { -it / 3 } + fadeIn()) togetherWith
+                            (slideOutHorizontally { it } + fadeOut())
                     }
-                }
-            }
-
-            LyricStrip(
-                lyric = lyric,
-                positionMs = positionMs,
-                activeColor = brand.liftForDark(),
-                onLineClick = { line -> onSeek(line.timeMs.toLong()) },
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-            )
+                label = "info-lyrics",
+            ) { lyricsVisible ->
+                if (lyricsVisible) {
+                    LyricsPage(
+                        lyric = lyric,
+                        positionMs = positionMs,
+                        activeColor = brand.liftForDark(),
+                        onLineClick = { line -> onSeek(line.timeMs.toLong()) },
+                        onBack = { showLyrics = false },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    SongInfoPage(
+                        song = song,
+                        brand = brand,
+                        onClose = onClose,
+                        onPrevious = onPrevious,
+                        onNext = onNext,
+                        hasPrevious = hasPrevious,
+                        hasNext = hasNext,
+                        onOpenLyrics = { showLyrics = true },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
 
             // 进度 + 控制条：同一块深色底，不做独立卡片
             Column(
@@ -487,13 +407,214 @@ private fun NowPlayingTopBar(
     }
 }
 
+/**
+ * 歌曲信息页。按参考图做成「封面在左、歌名在右上、歌手在右中」。
+ *
+ * 手势分工是这一页能被接受的关键：
+ * - 封面上的横向拖动切上一首/下一首；
+ * - 右侧文字区左滑进歌词页；
+ * - 只有这一页允许下滑关闭，而且只认「向下」，避免和歌词滚动打架。
+ */
+@Composable
+private fun SongInfoPage(
+    song: Song?,
+    brand: Color,
+    onClose: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    hasPrevious: Boolean,
+    hasNext: Boolean,
+    onOpenLyrics: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(
+        modifier
+            .pointerInput(onClose) {
+                val threshold = 96.dp.toPx()
+                var down = 0f
+                var lastY = 0L
+                var velocity = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { down = 0f; lastY = 0L; velocity = 0f },
+                    onDragEnd = {
+                        if (down > threshold || velocity > 900f) onClose()
+                        down = 0f
+                        velocity = 0f
+                        lastY = 0L
+                    },
+                    onDragCancel = { down = 0f; velocity = 0f; lastY = 0L },
+                ) { change, dy ->
+                    if (dy > 0f) {
+                        down += dy
+                        change.consume()
+                    }
+                    val t = change.uptimeMillis
+                    if (lastY > 0L && t > lastY) velocity = dy / (t - lastY).toFloat() * 1000f
+                    lastY = t
+                }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val coverSize = minOf(maxWidth * 0.54f, (maxHeight - 24.dp).coerceAtLeast(120.dp), 260.dp)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp),
+        ) {
+            SongCover(
+                song = song,
+                brand = brand,
+                size = coverSize,
+                modifier = Modifier.pointerInput(onPrevious, onNext, hasPrevious, hasNext) {
+                    val threshold = 56.dp.toPx()
+                    var dx = 0f
+                    var switched = false
+                    detectHorizontalDragGestures(
+                        onDragStart = { dx = 0f; switched = false },
+                        onDragEnd = { dx = 0f; switched = false },
+                        onDragCancel = { dx = 0f; switched = false },
+                    ) { change, amount ->
+                        if (!switched) dx += amount
+                        if (abs(dx) > 10f) change.consume()
+                        if (!switched && abs(dx) >= threshold) {
+                            if (dx < 0f && hasNext) onNext()
+                            if (dx > 0f && hasPrevious) onPrevious()
+                            switched = true
+                        }
+                    }
+                },
+            )
+            Spacer(Modifier.width(20.dp))
+            Column(
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier
+                    .weight(1f)
+                    .pointerInput(onOpenLyrics) {
+                        var dx = 0f
+                        val threshold = 48.dp.toPx()
+                        detectHorizontalDragGestures(
+                            onDragStart = { dx = 0f },
+                            onDragEnd = { dx = 0f },
+                            onDragCancel = { dx = 0f },
+                        ) { change, amount ->
+                            dx += amount
+                            if (abs(dx) > 10f) change.consume()
+                            if (dx < -threshold) {
+                                onOpenLyrics()
+                                dx = 0f
+                            }
+                        }
+                    },
+            ) {
+                Text(
+                    song?.title ?: "未在播放",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    song?.artistsText.orEmpty(),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (!song?.album.isNullOrBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        song?.album.orEmpty(),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "左滑查看歌词 · 封面横滑切歌",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                )
+                TextButton(onClick = onOpenLyrics, contentPadding = PaddingValues(0.dp)) {
+                    Text("查看歌词", color = brand.liftForDark())
+                }
+            }
+        }
+    }
+}
+
+/** 歌词页。纵向滚动完全交给 LazyColumn，右滑返回信息页，不接管任何纵向手势。 */
+@Composable
+private fun LyricsPage(
+    lyric: List<LineLyric>,
+    positionMs: Long,
+    activeColor: Color,
+    onLineClick: (LineLyric) -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier
+            .pointerInput(onBack) {
+                var dx = 0f
+                val threshold = 48.dp.toPx()
+                detectHorizontalDragGestures(
+                    onDragStart = { dx = 0f },
+                    onDragEnd = { dx = 0f },
+                    onDragCancel = { dx = 0f },
+                ) { change, amount ->
+                    dx += amount
+                    if (abs(dx) > 10f) change.consume()
+                    if (dx > threshold) {
+                        onBack()
+                        dx = 0f
+                    }
+                }
+            },
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
+        ) {
+            TextButton(onClick = onBack) {
+                Icon(Icons.Rounded.KeyboardArrowDown, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("返回")
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                "歌词",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(72.dp))
+        }
+        LyricStrip(
+            lyric = lyric,
+            positionMs = positionMs,
+            activeColor = activeColor,
+            onLineClick = onLineClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        )
+    }
+}
+
 /** 封面。尺寸由调用方算好传进来（min(屏宽 * 0.62, 240dp)），这里只负责圆角与阴影。 */
 @Composable
-private fun SongCover(song: Song?, brand: Color, size: Dp) {
+private fun SongCover(song: Song?, brand: Color, size: Dp, modifier: Modifier = Modifier) {
     Surface(
         shape = RoundedCornerShape(24.dp),
         shadowElevation = 18.dp,
-        modifier = Modifier.size(size),
+        modifier = modifier.size(size),
     ) {
         if (song?.coverUrl.isNullOrBlank()) {
             Box(
@@ -692,42 +813,6 @@ private fun LyricStrip(
  */
 private const val LyricCenterOffsetDp = 150
 private const val LyricPadHalfScreenDp = 110
-
-/**
- * 「整页往上推就收起」的嵌套滚动实现。
- *
- * 只认 preScroll（子组件还没消费时的那一段），并且只认向上：
- * - 如果歌词列表还有可滚的余地，它会在随后的 postScroll/自身滚动里把 available.y 吃干净，
- *   我们这里看到的位移就是 0，不会误收起；
- * - 列表到顶后继续上推，位移没人吃，累计超过阈值就收起；
- * - 向下拉一律不管（available.y > 0 提都不提），避免和「滚回顶部」的操作打架。
- *
- * 用 preScroll 而不是自己挂 detectVerticalDragGestures 挂在整页，是因为后者完全不参与
- * nested scroll 协议，会把歌词列表的滚动整个吞掉。
- */
-private fun closeOnSwipeUpScroll(onClose: () -> Unit): NestedScrollConnection =
-    object : NestedScrollConnection {
-        private val thresholdPx = 180f
-
-        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-            // available.y < 0 表示手指向上推。只累计向上的部分，
-            // 而且是负位移累加，所以用 -= 把它变成正数去和阈值比。
-            if (available.y < 0f) {
-                accumulated -= available.y
-                if (accumulated > thresholdPx) {
-                    accumulated = 0f
-                    onClose()
-                }
-            } else if (available.y > 0f) {
-                // 反向一拉就清零：否则来回搓几下也能凑够阈值，手感会很廉价。
-                accumulated = 0f
-            }
-            // 不消费任何位移，原样交给歌词列表，滚动不受影响。
-            return Offset.Zero
-        }
-
-        private var accumulated = 0f
-    }
 
 /**
  * 品牌色压暗。直接 copy(alpha=) 是「透明」，压到深色背景上会露出底下的 surface，

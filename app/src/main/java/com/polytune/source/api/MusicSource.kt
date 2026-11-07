@@ -40,6 +40,9 @@ interface MusicSource {
     suspend fun recommendBanners(): List<BannerItem> = emptyList()
     suspend fun recommendPlaylists(): List<PlaylistBrief> = emptyList()
 
+    /** 当前登录账号的「我的歌单」（自建 + 收藏）。未登录或该源没接时返回空。 */
+    suspend fun myPlaylists(): List<PlaylistBrief> = emptyList()
+
     /**
      * 歌单曲目。默认空实现：没接这个接口的源在界面上会被标成「暂不支持」，
      * 而不是拿推荐歌单的名字去搜一堆不相干的结果充数。

@@ -145,6 +145,14 @@ class DownloadWorker(
             dao.progress(taskId, outFile.length(), outFile.length())
             dao.refreshUrl(taskId, uri, headers.entries.joinToString("&") { "${it.key}=${it.value}" })
             dao.setState(taskId, DownloadState.DONE, null)
+            // 歌词跟着音频一起落盘：离线播放时直接读旁边车文件，不再依赖在线接口。
+            runCatching {
+                val l = graph.aggregator.lyricWithFallback(song)
+                if (l.first.isNotEmpty()) {
+                    com.polytune.core.util.LyricStore.save(outFile, l.first)
+                    DownloadTrace.log(applicationContext, "worker lyric ${task.title} lines=${l.first.size} src=${l.second}")
+                }
+            }
             DownloadTrace.log(applicationContext, "worker done ${task.title} ${outFile.length()}B -> ${outFile.absolutePath}")
         }.onFailure { e ->
             DownloadTrace.log(applicationContext, "worker fail ${task.title}: ${e.javaClass.simpleName} ${e.message}")

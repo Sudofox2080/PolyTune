@@ -74,7 +74,7 @@ fun LibraryScreen(
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                if (state.tab == 0) "来自三个平台的推荐歌单" else "已下载到本机，离线也能放",
+                if (state.tab == 0) "账号歌单与三平台推荐，登录后自动出现" else "已下载到本机，离线也能放",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
@@ -197,8 +197,33 @@ private fun OnlineTab(
         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 16.dp, bottom = 130.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        items(state.online, key = { "${it.platform}-${it.id}" }) { brief ->
-            PlaylistRow(brief) { onOpen(brief) }
+        val mine = state.online.filter { it.owned }
+        val recommended = state.online.filterNot { it.owned }
+        if (mine.isNotEmpty()) {
+            item(key = "mine-header") {
+                Text(
+                    "我的歌单 · 已登录账号",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 6.dp),
+                )
+            }
+            items(mine, key = { "mine-${it.platform}-${it.id}" }) { brief ->
+                PlaylistRow(brief) { onOpen(brief) }
+            }
+        }
+        if (recommended.isNotEmpty()) {
+            item(key = "rec-header") {
+                Text(
+                    "平台推荐",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 6.dp),
+                )
+            }
+            items(recommended, key = { "rec-${it.platform}-${it.id}" }) { brief ->
+                PlaylistRow(brief) { onOpen(brief) }
+            }
         }
         if (state.onlineError != null) {
             item {

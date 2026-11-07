@@ -495,6 +495,34 @@ class NeteaseSource(net: SourceHttp) : BaseMusicSource(Platform.NETEASE, net) {
      * 只回空（服务端改成要 csrf 与登录态），而明文接口照样开放，返回结构一模一样是
      * result[]，字段也没变，所以没必要为了它再折腾一套签名。
      */
+    override suspend fun myPlaylists(): List<PlaylistBrief> = runCatching {
+        if (!isLoggedIn()) return@runCatching emptyList()
+        val accountBody = account()
+        val uid = Jp.long(Jp.root(accountBody), "account.id") ?: return@runCatching emptyList()
+        log("my playlists uid=$uid")
+        val body = weapi(
+            "/api/user/playlist",
+            buildJsonObject {
+                put("uid", uid)
+                put("limit", 100)
+                put("offset", 0)
+                put("includeVideo", true)
+            },
+        )
+        if (body.isBlank()) return@runCatching emptyList()
+        Jp.objects(Jp.root(body), "playlist").mapNotNull { o ->
+            PlaylistBrief(
+                id = Jp.long(o, "id")?.toString() ?: return@mapNotNull null,
+                name = Jp.str(o, "name").orEmpty(),
+                coverUrl = Jp.str(o, "coverImgUrl").orEmpty(),
+                trackCount = Jp.int(o, "trackCount") ?: 0,
+                playCount = Jp.long(o, "playCount") ?: 0,
+                platform = Platform.NETEASE,
+                owned = true,
+            )
+        }
+    }.getOrDefault(emptyList())
+
     override suspend fun recommendPlaylists(): List<PlaylistBrief> = runCatching {
         val body = net.get(
             "https://music.163.com/api/personalized/playlist?limit=12&total=true",

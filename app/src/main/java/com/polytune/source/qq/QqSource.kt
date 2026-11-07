@@ -596,6 +596,34 @@ class QqSource(net: SourceHttp) : BaseMusicSource(Platform.QQ, net) {
     }.getOrDefault(emptyList())
 
     /**
+     * 当前 QQ 账号自建/收藏的歌单。接口是网页侧的 fcg_user_created_diss：
+     * 只需要 hostuin，不要求 musicu 的登录态，匿名也能拿到公开歌单，
+     * 登录后带上的 cookie 会让私有歌单一起出现；这里不做任何额外鉴权绕过。
+     */
+    override suspend fun myPlaylists(): List<PlaylistBrief> = runCatching {
+        if (!isLoggedIn()) return@runCatching emptyList()
+        val uin = credential.value?.uid.orEmpty()
+        if (uin.isBlank()) return@runCatching emptyList()
+        val url = "https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss" +
+            "?hostuin=$uin&sin=0&size=200&format=json"
+        val body = net.get(url, mapOf("Referer" to "https://y.qq.com/"))
+        if (body.isBlank()) return@runCatching emptyList()
+        val root = Jp.root(stripCallback(body))
+        Jp.objects(root, "data.disslist").mapNotNull { o ->
+            val id = Jp.str(o, "dissid") ?: return@mapNotNull null
+            PlaylistBrief(
+                id = id,
+                name = Jp.str(o, "dissname").orEmpty(),
+                coverUrl = Jp.str(o, "disspic").orEmpty(),
+                trackCount = Jp.int(o, "song_cnt") ?: Jp.int(o, "songnum") ?: 0,
+                playCount = Jp.long(o, "listennum") ?: 0,
+                platform = Platform.QQ,
+                owned = true,
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    /**
      * 推荐歌单走网页的分类歌单接口，不用 musicu 的 get_hot_recommend：
      * 后者现在匿名调用直接回 500003（要登录态），而分类歌单列表对匿名完全开放，
      * 正好是「发现」页要的东西。sortId=5 是按热度排。
