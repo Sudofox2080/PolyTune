@@ -7,9 +7,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
@@ -61,8 +61,8 @@ fun HomeScreen(
                     }
                     Spacer(Modifier.height(14.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        QuickEntry("发现歌单", Icons.Rounded.Explore, onLibrary, Modifier.weight(1f))
-                        QuickEntry("每日推荐", Icons.Rounded.AutoAwesome, { vm.refresh() }, Modifier.weight(1f))
+                        QuickEntry("我的歌单", Icons.Rounded.LibraryMusic, onLibrary, Modifier.weight(1f))
+                        QuickEntry("平台推荐", Icons.Rounded.Explore, onLibrary, Modifier.weight(1f))
                         QuickEntry("离线歌单", Icons.Rounded.Download, onOffline, Modifier.weight(1f))
                     }
                     Spacer(Modifier.height(26.dp))

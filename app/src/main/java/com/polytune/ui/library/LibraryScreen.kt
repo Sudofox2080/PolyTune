@@ -59,6 +59,7 @@ fun LibraryScreen(
     onPlaySong: (Song) -> Unit,
     onOpenSong: (Song) -> Unit,
     onPlayOnline: (List<Song>, Song) -> Unit,
+    onAccount: () -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
 
@@ -103,7 +104,7 @@ fun LibraryScreen(
                 onOpenSong = onOpenSong,
                 onRetry = vm::retryTracks,
             )
-            state.tab == 0 -> OnlineTab(state, onOpen = vm::openPlaylist, onRefresh = vm::refreshOnline)
+            state.tab == 0 -> OnlineTab(state, onOpen = vm::openPlaylist, onRefresh = vm::refreshOnline, onAccount = onAccount)
             else -> LocalTab(state, onPlaySong, onOpenSong)
         }
     }
@@ -185,6 +186,7 @@ private fun OnlineTab(
     state: LibraryViewModel.UiState,
     onOpen: (PlaylistBrief) -> Unit,
     onRefresh: () -> Unit,
+    onAccount: () -> Unit,
 ) {
     if (state.onlineLoading && state.online.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -199,6 +201,26 @@ private fun OnlineTab(
     ) {
         val mine = state.online.filter { it.owned }
         val recommended = state.online.filterNot { it.owned }
+        if (mine.isEmpty()) {
+            item(key = "mine-login") {
+                Surface(
+                    onClick = onAccount,
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+                ) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Cloud, null, Modifier.size(28.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("登录后显示我的在线歌单", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text("包括你自己创建和收藏的歌单；未登录只显示平台推荐", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                        }
+                        Text("去登录", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
+        }
         if (mine.isNotEmpty()) {
             item(key = "mine-header") {
                 Text(

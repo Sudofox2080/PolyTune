@@ -275,6 +275,7 @@ fun PolyTuneScaffold(
                                 )
                                 playVm.play(start)
                             },
+                            onAccount = { nav.select(Tab.ACCOUNT) },
                         )
                         Tab.DOWNLOAD -> DownloadScreen(downloadVm)
                         Tab.ACCOUNT -> AccountScreen(accountVm)
