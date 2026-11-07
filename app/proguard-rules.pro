@@ -1,0 +1,4 @@
+-keep class com.polytune.core.db.** { *; }
+-keepattributes *Annotation*
+-dontwarn org.slf4j.**
+-dontwarn com.hierynomus.**
